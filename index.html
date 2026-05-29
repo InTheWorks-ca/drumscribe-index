@@ -1337,7 +1337,7 @@
         <input id="pcloudPassword" type="password" autocomplete="current-password" placeholder="Enter once per session" />
 
         <div class="toolbar" style="margin-top:12px">
-          <button id="loadProtectedTree" class="primary">Unlock index/downloads</button>
+          <button id="loadProtectedTree" class="primary">Unlock downloads</button>
         </div>
 
 
@@ -1369,13 +1369,13 @@
         <button id="selectVisible">Select all shown</button>
         <button id="clearSelected" class="danger">Clear selection</button>
         <button id="downloadSelectedTop" class="primary hidden">Download selected files</button>
-        <span id="status" class="status">Index locked.</span>
+        <span id="status" class="status">Loading JSON...</span>
       </div>
 
       <div id="folderDetails" class="notice hidden"></div>
 
       <div id="tbody" class="trackList">
-        <div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>
+        <div class="muted">Loading JSON...</div>
       </div>
     </section>
   </main>
@@ -1403,22 +1403,17 @@
 
     applyTheme(preferredTheme());
 
-    // Expected layout:
-    // Public/
-    //   Drumscribe+ Member Files/
-    //   drumscribe-index/
-    //     index.html
-    //     drumscribe_index.json
-    //
+    // The index itself is published separately as an encrypted JSON package.
     // If your member-files folder name changes, update this constant.
     const DRUMSCRIBE_FILES_ROOT = "../Drumscribe%2B%20Member%20Files/";
 
     // Protected pCloud public-link settings.
     const PCLOUD_API = "https://eapi.pcloud.com";
-    const PCLOUD_INDEX_API = "https://api.pcloud.com";
     const PCLOUD_PUBLIC_LINK_CODE = "kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
-    const PCLOUD_INDEX_PUBLIC_LINK_CODE = "XZOJhI5ZJ5vUJjWRUJBOHhdqeWSMPH0wANpX";
-    const INDEX_JSON_FILENAME = "drumscribe_index.json";
+
+    // Public encrypted index package. This file is ciphertext; the user-entered
+    // member-files password is used locally in the browser to decrypt it.
+    const ENCRYPTED_INDEX_URL = "https://raw.githubusercontent.com/InTheWorks-ca/drumscribe-index-data/master/drumscribe_index.enc";
 
     // Optional override. Leave blank to open the Drumscribe+ Member Files directory.
     const MEMBER_FILES_URL = "https://e.pcloud.link/publink/show?code=kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
@@ -1435,7 +1430,6 @@
 
     let tracks = [];
     let trackCards = [];
-    let protectedIndexMetadata = null;
     let protectedMetadata = null;
     let protectedFileMap = new Map();
     let filtered = [];
@@ -1760,116 +1754,122 @@
     }
 
     async function loadJson(force = false) {
-      return loadProtectedIndexJson(force);
+      return loadEncryptedIndexJson(force);
     }
 
-    function findFileInMetadata(root, filename) {
-      const wanted = String(filename || "").toLowerCase();
-      let found = null;
-
-      function walk(node, parts) {
-        if (!node || typeof node !== "object" || found) return;
-
-        const name = node.name || "";
-        const nextParts = name ? [...parts, name] : parts;
-
-        if (!node.isfolder && node.fileid && String(name).toLowerCase() === wanted) {
-          found = { node, path: nextParts.join("/") };
-          return;
-        }
-
-        if (Array.isArray(node.contents)) {
-          for (const child of node.contents) walk(child, nextParts);
-        }
+    function base64ToBytes(value) {
+      const binary = atob(String(value || ""));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
       }
-
-      if (Array.isArray(root?.contents)) {
-        for (const child of root.contents) walk(child, []);
-      } else {
-        walk(root, []);
-      }
-
-      return found;
+      return bytes;
     }
 
-    async function extractJsonFromZipBlob(zipBlob, filename) {
-      if (!window.JSZip) throw new Error("JSZip is not loaded");
-
-      const wanted = String(filename || "").toLowerCase();
-      const zip = await JSZip.loadAsync(zipBlob);
-      let found = null;
-
-      zip.forEach((entryName, entry) => {
-        const base = entryName.split("/").pop().toLowerCase();
-        if (!found && !entry.dir && base === wanted) {
-          found = entry;
-        }
-      });
-
-      if (!found) {
-        zip.forEach((entryName, entry) => {
-          if (!found && !entry.dir && entryName.toLowerCase().endsWith(".json")) {
-            found = entry;
-          }
-        });
+    async function decryptEncryptedIndexPackage(pkg, password) {
+      if (!window.crypto?.subtle) {
+        throw new Error("Web Crypto is not available. Use HTTPS or localhost.");
       }
 
-      if (!found) throw new Error(`pCloud ZIP did not contain ${filename}`);
-      return found.async("string");
+      if (pkg?.format !== "drumscribe-index-encrypted-v1") {
+        throw new Error("Encrypted index has an unsupported format.");
+      }
+      if (pkg?.kdf !== "PBKDF2-SHA256" || pkg?.cipher !== "AES-GCM-256") {
+        throw new Error("Encrypted index uses unsupported crypto settings.");
+      }
+
+      const encoder = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      const key = await crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          hash: "SHA-256",
+          salt: base64ToBytes(pkg.salt),
+          iterations: Number(pkg.iterations),
+        },
+        keyMaterial,
+        {
+          name: "AES-GCM",
+          length: 256,
+        },
+        false,
+        ["decrypt"]
+      );
+
+      const plaintextBytes = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: base64ToBytes(pkg.iv),
+        },
+        key,
+        base64ToBytes(pkg.data)
+      );
+
+      return new TextDecoder().decode(plaintextBytes);
     }
 
-    async function loadProtectedIndexJson(force = false) {
+    async function loadEncryptedIndexJson(force = false) {
       const password = $("pcloudPassword").value;
       const status = $("downloadStatus");
       status.classList.remove("hidden");
 
       if (!password) {
         status.innerHTML = `<span class="dangerText">Enter the pCloud share password first.</span>`;
-        $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>`;
+        $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads.</div>`;
         $("status").textContent = "Index locked.";
         throw new Error("Missing pCloud password");
       }
 
-      if (protectedIndexMetadata && tracks.length && !force) return tracks;
+      if (tracks.length && !force) return tracks;
 
-      status.textContent = "Loading protected pCloud index...";
-      $("status").textContent = "Loading protected index...";
+      status.textContent = "Loading encrypted index...";
+      $("status").textContent = "Loading encrypted index...";
 
-      const params = new URLSearchParams({
-        code: PCLOUD_INDEX_PUBLIC_LINK_CODE,
-        linkpassword: password,
-      });
-
-      const res = await fetch(`${PCLOUD_INDEX_API}/showpublink?${params.toString()}`, {
+      const res = await fetch(`${ENCRYPTED_INDEX_URL}?t=${Date.now()}`, {
         method: "GET",
         mode: "cors",
         cache: "no-store",
       });
 
-      const json = await res.json();
-      if (!res.ok || json.result !== 0) {
-        status.innerHTML = `<span class="dangerText">Could not load protected index: ${escapeHtml(json.error || res.status)}</span>`;
+      if (!res.ok) {
+        status.innerHTML = `<span class="dangerText">Could not load encrypted index: HTTP ${escapeHtml(res.status)}</span>`;
         $("status").textContent = "Index load failed.";
-        throw new Error(json.error || `HTTP ${res.status}`);
+        throw new Error(`Encrypted index fetch failed: HTTP ${res.status}`);
       }
 
-      protectedIndexMetadata = json.metadata;
-      const found = findFileInMetadata(protectedIndexMetadata, INDEX_JSON_FILENAME);
-      if (!found?.node?.fileid) {
-        status.innerHTML = `<span class="dangerText">Could not find ${escapeHtml(INDEX_JSON_FILENAME)} in the protected index share.</span>`;
-        $("status").textContent = "Index file not found.";
-        throw new Error(`${INDEX_JSON_FILENAME} not found in protected index share`);
+      let encryptedPackage;
+      try {
+        encryptedPackage = await res.json();
+      } catch (err) {
+        status.innerHTML = `<span class="dangerText">Encrypted index is not valid JSON.</span>`;
+        $("status").textContent = "Index load failed.";
+        throw err;
       }
 
-      const zipBlob = await fetchPcloudZipBlob([found.node.fileid], PCLOUD_INDEX_PUBLIC_LINK_CODE, PCLOUD_INDEX_API);
-      const text = await extractJsonFromZipBlob(zipBlob, INDEX_JSON_FILENAME);
-      const indexJson = JSON.parse(text);
+      let decryptedText;
+      try {
+        decryptedText = await decryptEncryptedIndexPackage(encryptedPackage, password);
+      } catch (err) {
+        status.innerHTML = `<span class="dangerText">Could not decrypt index. Check that the current password matches the encrypted index.</span>`;
+        $("status").textContent = "Index decrypt failed.";
+        throw err;
+      }
 
+      const indexJson = JSON.parse(decryptedText);
       tracks = readRecords(indexJson);
       trackCards = tracks.flatMap(makeTrackCards);
       selectedIds.clear();
       applyFilters();
-      status.innerHTML = `<span class="ok">Index loaded.</span> ${tracks.length} tracks indexed from protected pCloud JSON.`;
+
+      const created = encryptedPackage.created_utc ? ` Encrypted ${escapeHtml(encryptedPackage.created_utc)}.` : "";
+      status.innerHTML = `<span class="ok">Index loaded.</span> ${tracks.length} tracks indexed from encrypted JSON.${created}`;
       return tracks;
     }
 
@@ -3215,7 +3215,7 @@
     $("downloadSelectedTop").addEventListener("click", downloadSelectedFiles);
     $("loadProtectedTree").addEventListener("click", async () => {
       try {
-        await loadProtectedIndexJson(true);
+        await loadEncryptedIndexJson(true);
         await loadProtectedFileTree(true);
       } catch (err) {
         console.error(err);
@@ -3225,7 +3225,7 @@
       if (e.key !== "Enter") return;
       e.preventDefault();
       try {
-        await loadProtectedIndexJson(true);
+        await loadEncryptedIndexJson(true);
         await loadProtectedFileTree(true);
       } catch (err) {
         console.error(err);
@@ -3258,7 +3258,7 @@
     });
 
 
-    $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>`;
+    $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads.</div>`;
     $("status").textContent = "Index locked.";
   </script>
 </body>
