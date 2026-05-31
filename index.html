@@ -1306,13 +1306,27 @@
     }
 
     .editDialog .dialogGrid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px 12px;
+      display: block;
     }
 
     .editDialog .dialogGrid .wide {
-      grid-column: 1 / -1;
+      width: 100%;
+    }
+
+    .editDialog .editSection {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px 12px;
+      margin: 12px 0;
+      background: var(--panel2);
+    }
+
+    .editDialog .editSectionTitle {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 0 0 8px;
     }
 
     .editDialog textarea {
@@ -1335,12 +1349,6 @@
       margin: 16px 0 0;
       padding: 0;
       flex-wrap: wrap;
-    }
-
-    @media (max-width: 520px) {
-      .editDialog .dialogGrid {
-        grid-template-columns: 1fr;
-      }
     }
 
 </style>
@@ -2626,17 +2634,17 @@
       const status = $("downloadStatus");
       status.classList.remove("hidden");
 
-      if (!$("wantPdf").checked && !$("wantGp").checked) {
-        status.innerHTML = `<span class="dangerText">Select PDF, GP, or both.</span>`;
+      await loadProtectedFileTree(false);
+      const info = folderFilesForTrack(track);
+      const files = info.files || [];
+
+      if (!info.folder) {
+        status.innerHTML = `<span class="dangerText">Could not find folder for ${escapeHtml(displayId(track.id))}.</span>`;
         return;
       }
 
-      await loadProtectedFileTree(false);
-      const info = folderFilesForTrack(track);
-      const files = filterFilesBySelectedTypes(info.files);
-
       if (!files.length) {
-        status.innerHTML = `<span class="dangerText">No matching PDF/GP files found for ${escapeHtml(displayId(track.id))}.</span>`;
+        status.innerHTML = `<span class="dangerText">No files found in the folder for ${escapeHtml(displayId(track.id))}.</span>`;
         return;
       }
 
@@ -3339,6 +3347,44 @@
       container.appendChild(wrap);
     }
 
+    function addDifficultySelect(container, labelText, path, value) {
+      const wrap = document.createElement("div");
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      const select = document.createElement("select");
+      select.dataset.path = JSON.stringify(path);
+      const current = difficultyEditValue(value);
+      const options = [
+        ["", "Unrated"],
+        ["1", "1 star"],
+        ["2", "2 stars"],
+        ["3", "3 stars"],
+        ["4", "4 stars"],
+        ["5", "5 stars"],
+      ];
+      for (const [optionValue, text] of options) {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = text;
+        option.selected = optionValue === current;
+        select.appendChild(option);
+      }
+      label.appendChild(select);
+      wrap.appendChild(label);
+      container.appendChild(wrap);
+    }
+
+    function addEditSection(container, title) {
+      const section = document.createElement("div");
+      section.className = "editSection";
+      const heading = document.createElement("div");
+      heading.className = "editSectionTitle";
+      heading.textContent = title;
+      section.appendChild(heading);
+      container.appendChild(section);
+      return section;
+    }
+
     function addEditTextarea(container, labelText, id, value = "") {
       const wrap = document.createElement("div");
       wrap.className = "wide";
@@ -3364,7 +3410,7 @@
 
     function collectChangesFromEditDialog(track) {
       const changes = [];
-      $("editDialogFields").querySelectorAll("input[data-path]").forEach((input) => {
+      $("editDialogFields").querySelectorAll("input[data-path], select[data-path]").forEach((input) => {
         const path = JSON.parse(input.dataset.path);
         const oldValue = valueAtPath(track, path);
         let newValue = input.value.trim();
@@ -3393,20 +3439,24 @@
       $("editDialogSub").textContent = `${track.artist} - ${track.title}` + (total > 1 ? ` (${index + 1} of ${total} selected IDs)` : "");
       fields.innerHTML = "";
 
-      addEditInput(fields, "Artist", ["artist"], track.artist || "");
-      addEditInput(fields, "Title", ["title"], track.title || "");
-      addEditInput(fields, "Original difficulty", ["versions", "regular", "difficulty"], difficultyEditValue(track.versions?.regular?.difficulty), "number");
-      if (track.versions?.simplified) {
-        addEditInput(fields, "Simplified difficulty", ["versions", "simplified", "difficulty"], difficultyEditValue(track.versions?.simplified?.difficulty), "number");
+      const general = addEditSection(fields, "Track metadata");
+      addEditInput(general, "Artist", ["artist"], track.artist || "");
+      addEditInput(general, "Title", ["title"], track.title || "");
+
+      const original = addEditSection(fields, "Original");
+      addDifficultySelect(original, "Difficulty", ["versions", "regular", "difficulty"], track.versions?.regular?.difficulty);
+      {
+        const base = ["versions", "regular", "videos", "playthrough"];
+        addEditInput(original, "Playthrough cover URL", [...base, "cover_url"], valueAtPath(track, [...base, "cover_url"]));
+        addEditInput(original, "Playthrough drums-only URL", [...base, "drums_only_url"], valueAtPath(track, [...base, "drums_only_url"]));
       }
 
-      for (const version of ["regular", "simplified"]) {
-        if (!track.versions?.[version]) continue;
-        const prefix = version === "regular" ? "Original" : "Simplified";
-        const base = ["versions", version, "videos", "playthrough"];
-        addEditInput(fields, `${prefix} playthrough cover URL`, [...base, "cover_url"], valueAtPath(track, [...base, "cover_url"]));
-        addEditInput(fields, `${prefix} playthrough drums-only URL`, [...base, "drums_only_url"], valueAtPath(track, [...base, "drums_only_url"]));
-        addEditInput(fields, `${prefix} playthrough drumless URL`, [...base, "drumless_url"], valueAtPath(track, [...base, "drumless_url"]));
+      if (track.versions?.simplified) {
+        const simplified = addEditSection(fields, "Simplified");
+        addDifficultySelect(simplified, "Difficulty", ["versions", "simplified", "difficulty"], track.versions?.simplified?.difficulty);
+        const base = ["versions", "simplified", "videos", "playthrough"];
+        addEditInput(simplified, "Playthrough cover URL", [...base, "cover_url"], valueAtPath(track, [...base, "cover_url"]));
+        addEditInput(simplified, "Playthrough drums-only URL", [...base, "drums_only_url"], valueAtPath(track, [...base, "drums_only_url"]));
       }
 
       const noteInput = addEditTextarea(fields, "Optional note", noteInputId, "");
