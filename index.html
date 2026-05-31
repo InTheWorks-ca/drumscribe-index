@@ -246,6 +246,7 @@
     .trackId {
       color: var(--accent);
       text-decoration: none;
+      cursor: pointer;
     }
 
 
@@ -1275,6 +1276,73 @@
       content: "▴";
     }
 
+
+    .editDialog {
+      width: min(640px, calc(100vw - 24px));
+      max-height: min(760px, calc(100vh - 24px));
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 16px;
+      box-shadow: 0 24px 60px var(--dropdown-shadow);
+    }
+
+    .editDialog::backdrop {
+      background: rgba(0, 0, 0, .58);
+    }
+
+    .editDialog h2 {
+      font-size: 18px;
+      margin: 0 0 6px;
+    }
+
+    .editDialog .dialogSub {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 14px;
+      line-height: 1.35;
+    }
+
+    .editDialog .dialogGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 12px;
+    }
+
+    .editDialog .dialogGrid .wide {
+      grid-column: 1 / -1;
+    }
+
+    .editDialog textarea {
+      width: 100%;
+      min-height: 72px;
+      resize: vertical;
+      background: var(--control-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .editDialog menu {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin: 16px 0 0;
+      padding: 0;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 520px) {
+      .editDialog .dialogGrid {
+        grid-template-columns: 1fr;
+      }
+    }
+
 </style>
 </head>
 <body>
@@ -1369,6 +1437,7 @@
         <button id="selectVisible">Select all shown</button>
         <button id="clearSelected" class="danger">Clear selection</button>
         <button id="downloadSelectedTop" class="primary hidden">Download selected files</button>
+        <button id="suggestSelectedEdits" class="primary hidden">Suggest edit(s)</button>
         <span id="status" class="status">Loading JSON...</span>
       </div>
 
@@ -1379,6 +1448,19 @@
       </div>
     </section>
   </main>
+
+  <dialog id="editTrackDialog" class="editDialog">
+    <h2 id="editDialogTitle">Suggest edit</h2>
+    <p id="editDialogSub" class="dialogSub"></p>
+    <form id="editDialogForm" method="dialog">
+      <div id="editDialogFields" class="dialogGrid"></div>
+      <menu>
+        <button id="editDialogCancel" type="button">Cancel</button>
+        <button id="editDialogSkip" type="button">Skip this ID</button>
+        <button id="editDialogSave" class="primary" type="submit">Add changes</button>
+      </menu>
+    </form>
+  </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
@@ -1414,6 +1496,8 @@
     // Public encrypted index package. This file is ciphertext; the user-entered
     // member-files password is used locally in the browser to decrypt it.
     const ENCRYPTED_INDEX_URL = "https://raw.githubusercontent.com/InTheWorks-ca/drumscribe-index-data/master/drumscribe_index.enc";
+    const ENCRYPTED_SUBMIT_TOKEN_URL = "https://raw.githubusercontent.com/InTheWorks-ca/drumscribe-index-data/master/drumscribe_submit_token.enc";
+    const GITHUB_ISSUES_API = "https://api.github.com/repos/InTheWorks-ca/drumscribe-index/issues";
 
     // Optional override. Leave blank to open the Drumscribe+ Member Files directory.
     const MEMBER_FILES_URL = "https://e.pcloud.link/publink/show?code=kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
@@ -1432,6 +1516,7 @@
     let trackCards = [];
     let protectedMetadata = null;
     let protectedFileMap = new Map();
+    let cachedSubmitToken = null;
     let filtered = [];
     const selectedIds = new Set();
 
@@ -1527,7 +1612,9 @@
         const videos = data?.videos || {};
         const formats = [
           { format: "playthrough", videoData: videos.playthrough || null },
-          ...scrollingSheetVideoCards(videos),
+          // Scrolling-sheet videos are not active yet. Leave the helper in place
+          // for a future data/schema update, but do not create UI cards now.
+          // ...scrollingSheetVideoCards(videos),
         ];
 
         for (const item of formats) {
@@ -1870,7 +1957,29 @@
 
       const created = encryptedPackage.created_utc ? ` Encrypted ${escapeHtml(encryptedPackage.created_utc)}.` : "";
       status.innerHTML = `<span class="ok">Index loaded.</span> ${tracks.length} tracks indexed from encrypted JSON.${created}`;
+      cachedSubmitToken = null;
       return tracks;
+    }
+
+    async function fetchEncryptedText(url, password) {
+      const res = await fetch(`${url}?t=${Date.now()}`, {
+        method: "GET",
+        mode: "cors",
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`Could not fetch encrypted data: HTTP ${res.status}`);
+      const encryptedPackage = await res.json();
+      return decryptEncryptedIndexPackage(encryptedPackage, password);
+    }
+
+    async function loadSubmitToken() {
+      if (cachedSubmitToken) return cachedSubmitToken;
+      const password = $("pcloudPassword").value;
+      if (!password) throw new Error("Enter the pCloud/member password first.");
+      const token = (await fetchEncryptedText(ENCRYPTED_SUBMIT_TOKEN_URL, password)).trim();
+      if (!token) throw new Error("Decrypted submit token is empty.");
+      cachedSubmitToken = token;
+      return token;
     }
 
     function checkedValues(name) {
@@ -1999,7 +2108,7 @@
             : "";
           card.innerHTML = `
             <div class="trackCheck"><input type="checkbox" data-key="${escapeHtml(cardData.key)}" ${checked}></div>
-            <span class="id trackId" data-id="${escapeHtml(cardData.id)}">${escapeHtml(displayId(cardData.id))}${simplifiedMark}${sheetMusicMark}</span>
+            <span class="id trackId" data-id="${escapeHtml(cardData.id)}" title="Download this track folder" role="button" tabindex="0">${escapeHtml(displayId(cardData.id))}${simplifiedMark}${sheetMusicMark}</span>
             <div class="trackMain">
               <div class="trackArtist">${escapeHtml(cardData.artist)}</div>
               <div class="trackTitle">${escapeHtml(cardData.title)}</div>
@@ -2020,6 +2129,19 @@
           if (e.target.checked) selectedIds.add(key);
           else selectedIds.delete(key);
           updateStatus();
+        });
+      });
+
+      tbody.querySelectorAll(".trackId").forEach((el) => {
+        const handle = async () => {
+          const track = tracks.find((t) => t.id === el.dataset.id);
+          if (track) await downloadFolderFiles(track);
+        };
+        el.addEventListener("click", handle);
+        el.addEventListener("keydown", async (e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          await handle();
         });
       });
 
@@ -2061,6 +2183,12 @@
         topDownload.classList.toggle("hidden", selectedIds.size < 1 || !downloadsReady());
         topDownload.disabled = !downloadsReady();
         topDownload.textContent = `Download ${selectedIds.size} selected`;
+      }
+      const suggestEdits = $("suggestSelectedEdits");
+      if (suggestEdits) {
+        suggestEdits.classList.toggle("hidden", selectedIds.size < 1 || !tracks.length);
+        suggestEdits.disabled = selectedIds.size < 1 || !tracks.length;
+        suggestEdits.textContent = selectedIds.size === 1 ? "Suggest edit" : `Suggest edits (${selectedIds.size})`;
       }
     }
 
@@ -3181,6 +3309,217 @@
       await downloadZipForTracks([track], useAllFiles);
     }
 
+    function selectedUniqueTracksForEdit() {
+      const byId = new Map();
+      for (const cardData of trackCards) {
+        if (selectedIds.has(cardData.key)) byId.set(cardData.track.id, cardData.track);
+      }
+      return [...byId.values()].sort((a, b) => numericId(a.id) - numericId(b.id));
+    }
+
+    function valueAtPath(root, path) {
+      let current = root;
+      for (const part of path) {
+        if (current === null || current === undefined) return "";
+        current = current[part];
+      }
+      return current ?? "";
+    }
+
+    function addEditInput(container, labelText, path, value, type = "text") {
+      const wrap = document.createElement("div");
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      const input = document.createElement("input");
+      input.type = type;
+      input.value = value ?? "";
+      input.dataset.path = JSON.stringify(path);
+      label.appendChild(input);
+      wrap.appendChild(label);
+      container.appendChild(wrap);
+    }
+
+    function addEditTextarea(container, labelText, id, value = "") {
+      const wrap = document.createElement("div");
+      wrap.className = "wide";
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      const textarea = document.createElement("textarea");
+      textarea.id = id;
+      textarea.value = value;
+      label.appendChild(textarea);
+      wrap.appendChild(label);
+      container.appendChild(wrap);
+      return textarea;
+    }
+
+    function difficultyEditValue(value) {
+      const d = normaliseDifficulty(value);
+      return d === null ? "" : String(d);
+    }
+
+    function changeValuesDiffer(oldValue, newValue) {
+      return String(oldValue ?? "") !== String(newValue ?? "");
+    }
+
+    function collectChangesFromEditDialog(track) {
+      const changes = [];
+      $("editDialogFields").querySelectorAll("input[data-path]").forEach((input) => {
+        const path = JSON.parse(input.dataset.path);
+        const oldValue = valueAtPath(track, path);
+        let newValue = input.value.trim();
+
+        if (String(path.at(-1)) === "difficulty") {
+          newValue = newValue === "" ? null : Number(newValue);
+          if (newValue !== null && (!Number.isFinite(newValue) || newValue < 1 || newValue > 5)) return;
+        } else if (newValue === "") {
+          newValue = null;
+        }
+
+        if (changeValuesDiffer(oldValue, newValue)) {
+          changes.push({ id: String(track.id), path, old: oldValue === "" ? null : oldValue, new: newValue });
+        }
+      });
+      return changes;
+    }
+
+    function openTrackEditDialog(track, index, total) {
+      const dialog = $("editTrackDialog");
+      const form = $("editDialogForm");
+      const fields = $("editDialogFields");
+      const noteInputId = "editDialogNote";
+
+      $("editDialogTitle").textContent = `Suggest edit for ${displayId(track.id)}`;
+      $("editDialogSub").textContent = `${track.artist} - ${track.title}` + (total > 1 ? ` (${index + 1} of ${total} selected IDs)` : "");
+      fields.innerHTML = "";
+
+      addEditInput(fields, "Artist", ["artist"], track.artist || "");
+      addEditInput(fields, "Title", ["title"], track.title || "");
+      addEditInput(fields, "Original difficulty", ["versions", "regular", "difficulty"], difficultyEditValue(track.versions?.regular?.difficulty), "number");
+      if (track.versions?.simplified) {
+        addEditInput(fields, "Simplified difficulty", ["versions", "simplified", "difficulty"], difficultyEditValue(track.versions?.simplified?.difficulty), "number");
+      }
+
+      for (const version of ["regular", "simplified"]) {
+        if (!track.versions?.[version]) continue;
+        const prefix = version === "regular" ? "Original" : "Simplified";
+        const base = ["versions", version, "videos", "playthrough"];
+        addEditInput(fields, `${prefix} playthrough cover URL`, [...base, "cover_url"], valueAtPath(track, [...base, "cover_url"]));
+        addEditInput(fields, `${prefix} playthrough drums-only URL`, [...base, "drums_only_url"], valueAtPath(track, [...base, "drums_only_url"]));
+        addEditInput(fields, `${prefix} playthrough drumless URL`, [...base, "drumless_url"], valueAtPath(track, [...base, "drumless_url"]));
+      }
+
+      const noteInput = addEditTextarea(fields, "Optional note", noteInputId, "");
+
+      return new Promise((resolve) => {
+        const cleanup = () => {
+          form.onsubmit = null;
+          $("editDialogCancel").onclick = null;
+          $("editDialogSkip").onclick = null;
+        };
+
+        form.onsubmit = (e) => {
+          e.preventDefault();
+          const changes = collectChangesFromEditDialog(track);
+          const note = noteInput.value.trim();
+          cleanup();
+          dialog.close();
+          resolve({ action: "save", changes, note });
+        };
+
+        $("editDialogCancel").onclick = () => {
+          cleanup();
+          dialog.close();
+          resolve({ action: "cancel", changes: [], note: "" });
+        };
+
+        $("editDialogSkip").onclick = () => {
+          cleanup();
+          dialog.close();
+          resolve({ action: "skip", changes: [], note: "" });
+        };
+
+        dialog.showModal();
+      });
+    }
+
+    function buildPatchIssueBody(patch) {
+      return [
+        "Anonymous DrumScribe index edit proposal.",
+        "",
+        "```json",
+        JSON.stringify(patch, null, 2),
+        "```",
+      ].join("\n");
+    }
+
+    async function createPatchIssue(patch) {
+      const token = await loadSubmitToken();
+      const ids = [...new Set(patch.changes.map((change) => displayId(change.id)).concat((patch.notes || []).map((note) => displayId(note.id))))].filter(Boolean).join(", ");
+      const res = await fetch(GITHUB_ISSUES_API, {
+        method: "POST",
+        headers: {
+          "Accept": "application/vnd.github+json",
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          title: `DrumScribe index edit proposal${ids ? `: ${ids}` : ""}`,
+          body: buildPatchIssueBody(patch),
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `GitHub issue create failed: HTTP ${res.status}`);
+      return json;
+    }
+
+    async function suggestSelectedEdits() {
+      const status = $("downloadStatus");
+      status.classList.remove("hidden");
+
+      const selected = selectedUniqueTracksForEdit();
+      if (!selected.length) {
+        status.innerHTML = `<span class="dangerText">Select at least one row first.</span>`;
+        return;
+      }
+
+      const changes = [];
+      const notes = [];
+      for (let i = 0; i < selected.length; i++) {
+        const result = await openTrackEditDialog(selected[i], i, selected.length);
+        if (result.action === "cancel") {
+          status.textContent = "Edit proposal cancelled.";
+          return;
+        }
+        changes.push(...result.changes);
+        if (result.note) notes.push({ id: String(selected[i].id), note: result.note });
+      }
+
+      if (!changes.length && !notes.length) {
+        status.textContent = "No edit proposal submitted; no changes were entered.";
+        return;
+      }
+
+      const patch = {
+        format: "drumscribe-index-patch-v1",
+        created_utc: new Date().toISOString(),
+        source: "drumscribe-index-browser",
+        changes,
+        notes,
+      };
+
+      status.textContent = "Submitting edit proposal...";
+      try {
+        const issue = await createPatchIssue(patch);
+        status.innerHTML = `<span class="ok">Edit proposal submitted.</span> <a href="${escapeHtml(issue.html_url)}" target="_blank" rel="noopener noreferrer">Open issue</a>`;
+      } catch (err) {
+        console.error(err);
+        status.innerHTML = `<span class="dangerText">Could not submit edit proposal: ${escapeHtml(err?.message || err)}</span>`;
+      }
+    }
+
     async function downloadSelectedFiles() {
       await downloadZipForCards(selectedCardsForDownload());
     }
@@ -3213,6 +3552,7 @@
     });
 
     $("downloadSelectedTop").addEventListener("click", downloadSelectedFiles);
+    $("suggestSelectedEdits").addEventListener("click", suggestSelectedEdits);
     $("loadProtectedTree").addEventListener("click", async () => {
       try {
         await loadEncryptedIndexJson(true);
