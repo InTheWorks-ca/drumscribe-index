@@ -1,0 +1,174 @@
+{
+  "tracks": [
+    {
+      "id": "string",
+      "artist": "string",
+      "title": "string",
+      "metadata?": {
+        "year?": "number | null",
+        "album?": "string | null",
+        "genres?": ["string"],
+        "tags?": ["string"]
+      },
+      "versions": {
+        "regular": {
+          "difficulty": "number | null",
+          "videos": {
+            "playthrough": {
+              "cover_url": "string | null",
+              "drums_only_url": "string | null",
+              "drumless_url": "string | null"
+            },
+            "scrolling_sheet?": {
+              "light?": {
+                "cover_url": "string | null",
+                "drums_only_url": "string | null",
+                "drumless_url": "string | null"
+              },
+              "dark?": {
+                "cover_url": "string | null",
+                "drums_only_url": "string | null",
+                "drumless_url": "string | null"
+              }
+            }
+          }
+        },
+        "simplified?": {
+          "difficulty": "number | null",
+          "videos?": {
+            "playthrough": {
+              "cover_url": "string | null",
+              "drums_only_url": "string | null",
+              "drumless_url": "string | null"
+            },
+            "scrolling_sheet?": {
+              "light?": {
+                "cover_url": "string | null",
+                "drums_only_url": "string | null",
+                "drumless_url": "string | null"
+              },
+              "dark?": {
+                "cover_url": "string | null",
+                "drums_only_url": "string | null",
+                "drumless_url": "string | null"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+
+Field rules:
+
+tracks
+  Required array of song/chart-family records.
+
+track.id
+  Required stable unique id for the song/chart family.
+  This id is shared by regular and simplified versions.
+
+track.artist
+  Required display artist name.
+
+track.title
+  Required display song title.
+
+track.metadata
+  Optional shared song metadata.
+  Applies to the song, not to a specific chart version.
+  If omitted, metadata is unknown or not currently indexed.
+
+track.metadata.year
+  Optional release year.
+  Use null if present but not assigned or unknown.
+
+track.metadata.album
+  Optional album name.
+  Use null if present but not assigned or unknown.
+
+track.metadata.genres
+  Optional array of genre strings.
+  Use an empty array if present but no genres are assigned.
+
+track.metadata.tags
+  Optional array of tag strings.
+  Use an empty array if present but no tags are assigned.
+
+track.versions
+  Required object containing available chart versions.
+
+track.versions.regular
+  Required standard chart arrangement.
+
+track.versions.simplified
+  Optional simplified chart arrangement.
+  Present only when a simplified chart exists.
+  Do not create placeholder simplified versions.
+
+version.difficulty
+  Required difficulty for that specific chart version.
+  Use null if not assigned.
+
+version.videos
+  Required for regular versions.
+  Optional for simplified versions when no simplified-specific videos exist.
+  If present, it must contain playthrough.
+
+videos.playthrough
+  Required whenever videos is present.
+  Video format where performance video is shown and notation/text appears near the bottom.
+
+videos.scrolling_sheet
+  Optional video format where the scrolling sheet occupies the screen.
+  Omit this object when no scrolling-sheet videos exist.
+  Do not create placeholder scrolling_sheet objects.
+
+videos.scrolling_sheet.light
+  Optional light-theme scrolling sheet video links.
+  Omit when no light-theme scrolling-sheet videos exist.
+
+videos.scrolling_sheet.dark
+  Optional dark-theme scrolling sheet video links.
+  Omit when no dark-theme scrolling-sheet videos exist.
+
+cover_url
+  Required inside playthrough and inside any present scrolling_sheet theme object.
+  Drum performance mixed with the drumless song.
+  Use null if unavailable.
+
+drums_only_url
+  Required inside playthrough and inside any present scrolling_sheet theme object.
+  Only the drum performance audio.
+  Use null if unavailable.
+
+drumless_url
+  Required inside playthrough and inside any present scrolling_sheet theme object.
+  Song/backing audio with drums removed.
+  Use null if unavailable.
+
+Example:
+{
+  "id": "000",
+  "artist": "Metallica",
+  "title": "Enter Sandman",
+  "metadata": {
+    "year": null,
+    "album": null,
+    "genres": [],
+    "tags": []
+  },
+  "versions": {
+    "regular": {
+      "difficulty": 3,
+      "videos": {
+        "playthrough": {
+          "cover_url": "https://www.youtube.com/watch?v=nnuyu43qqHs",
+          "drums_only_url": "https://www.youtube.com/watch?v=e56daioF0wc",
+          "drumless_url": null
+        }
+      }
+    }
+  }
+}
