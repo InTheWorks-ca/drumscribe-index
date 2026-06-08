@@ -2219,19 +2219,32 @@
     function findPcloudFolder(track) {
       if (!pcloudMetadata) return { node: null, path: computedDirectoryParts(track).join("/") };
 
-      const wantedPath = computedDirectoryParts(track).join("/");
-      let found = null;
+      const wantedParts = computedDirectoryParts(track);
+      const wantedPath = wantedParts.join("/");
+      const wantedFolderName = folderName(track);
+      let exactFound = null;
+      let nameFallback = null;
 
       function walk(node, parts) {
-        if (!node || typeof node !== "object" || found) return;
+        if (!node || typeof node !== "object" || exactFound) return;
 
         const name = node.name || "";
         const nextParts = name ? [...parts, name] : parts;
         const currentPath = nextParts.join("/");
 
-        if (node.isfolder && currentPath === wantedPath) {
-          found = node;
-          return;
+        if (node.isfolder) {
+          if (currentPath === wantedPath) {
+            exactFound = { node, path: currentPath };
+            return;
+          }
+
+          // Boundary folders can move when the pCloud structure changes, for example
+          // #700/#701 may not live under the computed decade/range folder. If the
+          // exact computed path fails, use the track folder's own name anywhere in
+          // the share as a fallback.
+          if (!nameFallback && name === wantedFolderName) {
+            nameFallback = { node, path: currentPath };
+          }
         }
 
         if (Array.isArray(node.contents)) {
@@ -2246,7 +2259,7 @@
         walk(pcloudMetadata, []);
       }
 
-      return { node: found, path: wantedPath };
+      return exactFound || nameFallback || { node: null, path: wantedPath };
     }
 
     function folderFilesForTrack(track) {
