@@ -2216,17 +2216,44 @@
       return { node: null, path };
     }
 
+    function normaliseFolderLookupName(value) {
+      return String(value || "")
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/%20/g, " ")
+        .replace(/\s*[–—-]\s*/g, "-")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    }
+
+    function pcloudFolderNameCandidates(track) {
+      return [
+        track?.pcloud_lookup?.folder_name,
+        folderName(track),
+        track?.file_stem,
+        `${displayId(track?.id)} DRUMSCRIBE`,
+      ].filter(Boolean);
+    }
+
+    function folderHasDownloadableFiles(node) {
+      if (!node || typeof node !== "object") return false;
+      if (!node.isfolder && node.fileid) return true;
+      if (!Array.isArray(node.contents)) return false;
+      return node.contents.some(folderHasDownloadableFiles);
+    }
+
     function findPcloudFolder(track) {
       if (!pcloudMetadata) return { node: null, path: computedDirectoryParts(track).join("/") };
 
-      const wantedParts = computedDirectoryParts(track);
-      const wantedPath = wantedParts.join("/");
-      const wantedFolderName = folderName(track);
-      let exactFound = null;
-      let nameFallback = null;
+      const wantedPath = computedDirectoryParts(track).join("/");
+      const candidateNames = pcloudFolderNameCandidates(track);
+      const candidateSet = new Set(candidateNames.map(normaliseFolderLookupName));
+      const nameMatches = [];
+      let computedPathMatch = null;
 
       function walk(node, parts) {
-        if (!node || typeof node !== "object" || exactFound) return;
+        if (!node || typeof node !== "object") return;
 
         const name = node.name || "";
         const nextParts = name ? [...parts, name] : parts;
@@ -2234,16 +2261,11 @@
 
         if (node.isfolder) {
           if (currentPath === wantedPath) {
-            exactFound = { node, path: currentPath };
-            return;
+            computedPathMatch = { node, path: currentPath };
           }
 
-          // Boundary folders can move when the pCloud structure changes, for example
-          // #700/#701 may not live under the computed decade/range folder. If the
-          // exact computed path fails, use the track folder's own name anywhere in
-          // the share as a fallback.
-          if (!nameFallback && name === wantedFolderName) {
-            nameFallback = { node, path: currentPath };
+          if (candidateSet.has(normaliseFolderLookupName(name))) {
+            nameMatches.push({ node, path: currentPath });
           }
         }
 
@@ -2259,7 +2281,15 @@
         walk(pcloudMetadata, []);
       }
 
-      return exactFound || nameFallback || { node: null, path: wantedPath };
+      // Prefer the actual track folder name over number-derived range paths. This
+      // handles boundary folders such as #700/#701 where pCloud's range grouping
+      // may not match the deterministic directory formula.
+      const nameMatchWithFiles = nameMatches.find((match) => folderHasDownloadableFiles(match.node));
+      if (nameMatchWithFiles) return nameMatchWithFiles;
+      if (nameMatches.length) return nameMatches[0];
+      if (computedPathMatch) return computedPathMatch;
+
+      return { node: null, path: candidateNames[0] || wantedPath };
     }
 
     function folderFilesForTrack(track) {
