@@ -1333,11 +1333,11 @@
 
       <fieldset>
         <legend>Downloads</legend>
-        <label for="pcloudPassword">pCloud share password</label>
+        <label for="pcloudPassword">pCloud public-link password</label>
         <input id="pcloudPassword" type="password" autocomplete="current-password" placeholder="Enter once per session" />
 
         <div class="toolbar" style="margin-top:12px">
-          <button id="loadProtectedTree" class="primary">Unlock index/downloads</button>
+          <button id="loadPcloudFileList" class="primary">Load pCloud file list</button>
         </div>
 
 
@@ -1369,13 +1369,13 @@
         <button id="selectVisible">Select all shown</button>
         <button id="clearSelected" class="danger">Clear selection</button>
         <button id="downloadSelectedTop" class="primary hidden">Download selected files</button>
-        <span id="status" class="status">Index locked.</span>
+        <span id="status" class="status">Loading JSON...</span>
       </div>
 
       <div id="folderDetails" class="notice hidden"></div>
 
       <div id="tbody" class="trackList">
-        <div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>
+        <div class="muted">Loading JSON...</div>
       </div>
     </section>
   </main>
@@ -1408,17 +1408,17 @@
     //   Drumscribe+ Member Files/
     //   drumscribe-index/
     //     index.html
-    //     drumscribe_index.json
     //
+    // The index JSON is loaded from the same directory as this HTML file.
     // If your member-files folder name changes, update this constant.
     const DRUMSCRIBE_FILES_ROOT = "../Drumscribe%2B%20Member%20Files/";
 
-    // Protected pCloud public-link settings.
+    // pCloud public-link API settings for member downloads.
     const PCLOUD_API = "https://eapi.pcloud.com";
-    const PCLOUD_INDEX_API = "https://api.pcloud.com";
     const PCLOUD_PUBLIC_LINK_CODE = "kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
-    const PCLOUD_INDEX_PUBLIC_LINK_CODE = "XZOJhI5ZJ5vUJjWRUJBOHhdqeWSMPH0wANpX";
-    const INDEX_JSON_FILENAME = "drumscribe_index.json";
+
+    // Public index JSON. Keep drumscribe_index.json in the same directory as index.html.
+    const INDEX_JSON_URL = new URL("drumscribe_index.json", window.location.href).href;
 
     // Optional override. Leave blank to open the Drumscribe+ Member Files directory.
     const MEMBER_FILES_URL = "https://e.pcloud.link/publink/show?code=kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
@@ -1435,9 +1435,8 @@
 
     let tracks = [];
     let trackCards = [];
-    let protectedIndexMetadata = null;
-    let protectedMetadata = null;
-    let protectedFileMap = new Map();
+    let pcloudMetadata = null;
+    let pcloudFileMap = new Map();
     let filtered = [];
     const selectedIds = new Set();
 
@@ -1760,116 +1759,46 @@
     }
 
     async function loadJson(force = false) {
-      return loadProtectedIndexJson(force);
+      return loadIndexJson(force);
     }
 
-    function findFileInMetadata(root, filename) {
-      const wanted = String(filename || "").toLowerCase();
-      let found = null;
-
-      function walk(node, parts) {
-        if (!node || typeof node !== "object" || found) return;
-
-        const name = node.name || "";
-        const nextParts = name ? [...parts, name] : parts;
-
-        if (!node.isfolder && node.fileid && String(name).toLowerCase() === wanted) {
-          found = { node, path: nextParts.join("/") };
-          return;
-        }
-
-        if (Array.isArray(node.contents)) {
-          for (const child of node.contents) walk(child, nextParts);
-        }
-      }
-
-      if (Array.isArray(root?.contents)) {
-        for (const child of root.contents) walk(child, []);
-      } else {
-        walk(root, []);
-      }
-
-      return found;
-    }
-
-    async function extractJsonFromZipBlob(zipBlob, filename) {
-      if (!window.JSZip) throw new Error("JSZip is not loaded");
-
-      const wanted = String(filename || "").toLowerCase();
-      const zip = await JSZip.loadAsync(zipBlob);
-      let found = null;
-
-      zip.forEach((entryName, entry) => {
-        const base = entryName.split("/").pop().toLowerCase();
-        if (!found && !entry.dir && base === wanted) {
-          found = entry;
-        }
-      });
-
-      if (!found) {
-        zip.forEach((entryName, entry) => {
-          if (!found && !entry.dir && entryName.toLowerCase().endsWith(".json")) {
-            found = entry;
-          }
-        });
-      }
-
-      if (!found) throw new Error(`pCloud ZIP did not contain ${filename}`);
-      return found.async("string");
-    }
-
-    async function loadProtectedIndexJson(force = false) {
-      const password = $("pcloudPassword").value;
+    async function loadIndexJson(force = false) {
       const status = $("downloadStatus");
+
+      if (tracks.length && !force) return tracks;
+
       status.classList.remove("hidden");
+      status.textContent = "Loading JSON index...";
+      $("status").textContent = "Loading JSON index...";
 
-      if (!password) {
-        status.innerHTML = `<span class="dangerText">Enter the pCloud share password first.</span>`;
-        $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>`;
-        $("status").textContent = "Index locked.";
-        throw new Error("Missing pCloud password");
-      }
-
-      if (protectedIndexMetadata && tracks.length && !force) return tracks;
-
-      status.textContent = "Loading protected pCloud index...";
-      $("status").textContent = "Loading protected index...";
-
-      const params = new URLSearchParams({
-        code: PCLOUD_INDEX_PUBLIC_LINK_CODE,
-        linkpassword: password,
-      });
-
-      const res = await fetch(`${PCLOUD_INDEX_API}/showpublink?${params.toString()}`, {
+      const res = await fetch(`${INDEX_JSON_URL}?t=${Date.now()}`, {
         method: "GET",
-        mode: "cors",
         cache: "no-store",
       });
 
-      const json = await res.json();
-      if (!res.ok || json.result !== 0) {
-        status.innerHTML = `<span class="dangerText">Could not load protected index: ${escapeHtml(json.error || res.status)}</span>`;
-        $("status").textContent = "Index load failed.";
-        throw new Error(json.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        status.innerHTML = `<span class="dangerText">Could not load JSON index: HTTP ${escapeHtml(res.status)}</span>`;
+        $("tbody").innerHTML = `<div class="muted">Could not load drumscribe_index.json from the same directory as index.html.</div>`;
+        $("status").textContent = "JSON load failed.";
+        throw new Error(`JSON index fetch failed: HTTP ${res.status}`);
       }
 
-      protectedIndexMetadata = json.metadata;
-      const found = findFileInMetadata(protectedIndexMetadata, INDEX_JSON_FILENAME);
-      if (!found?.node?.fileid) {
-        status.innerHTML = `<span class="dangerText">Could not find ${escapeHtml(INDEX_JSON_FILENAME)} in the protected index share.</span>`;
-        $("status").textContent = "Index file not found.";
-        throw new Error(`${INDEX_JSON_FILENAME} not found in protected index share`);
+      let indexJson;
+      try {
+        indexJson = await res.json();
+      } catch (err) {
+        status.innerHTML = `<span class="dangerText">JSON index is not valid JSON.</span>`;
+        $("tbody").innerHTML = `<div class="muted">drumscribe_index.json could not be parsed.</div>`;
+        $("status").textContent = "JSON parse failed.";
+        throw err;
       }
-
-      const zipBlob = await fetchPcloudZipBlob([found.node.fileid], PCLOUD_INDEX_PUBLIC_LINK_CODE, PCLOUD_INDEX_API);
-      const text = await extractJsonFromZipBlob(zipBlob, INDEX_JSON_FILENAME);
-      const indexJson = JSON.parse(text);
 
       tracks = readRecords(indexJson);
       trackCards = tracks.flatMap(makeTrackCards);
       selectedIds.clear();
       applyFilters();
-      status.innerHTML = `<span class="ok">Index loaded.</span> ${tracks.length} tracks indexed from protected pCloud JSON.`;
+
+      status.innerHTML = `<span class="ok">Index loaded.</span> ${tracks.length} tracks indexed from local JSON.`;
       return tracks;
     }
 
@@ -1916,7 +1845,7 @@
     }
 
     function downloadsReady() {
-      return Boolean(protectedMetadata && protectedFileMap && protectedFileMap.size);
+      return Boolean(pcloudMetadata && pcloudFileMap && pcloudFileMap.size);
     }
 
     function hasPdfVariantForCard(cardData, wantRepeats) {
@@ -1933,7 +1862,7 @@
 
     function downloadMenuHtml(cardData) {
       if (!downloadsReady()) {
-        return `<button type="button" class="small lockedDownload" disabled title="Enter the pCloud password and unlock downloads first.">Download</button>`;
+        return `<button type="button" class="small lockedDownload" disabled title="Enter the pCloud password and load the pCloud file list first.">Download</button>`;
       }
 
       const items = [];
@@ -2054,7 +1983,7 @@
 
     function updateStatus() {
       const renderedRows = document.querySelectorAll("#tbody .trackCard").length;
-      const lockText = downloadsReady() ? ` · ${protectedFileMap.size} protected files indexed` : " · downloads locked";
+      const lockText = downloadsReady() ? ` · ${pcloudFileMap.size} pCloud files indexed` : " · pCloud files not loaded";
       $("status").textContent = `${tracks.length} tracks · ${trackCards.length} cards · ${filtered.length} matching · ${renderedRows} shown · ${selectedIds.size} selected${lockText}`;
       const topDownload = $("downloadSelectedTop");
       if (topDownload) {
@@ -2118,7 +2047,7 @@
       };
     }
 
-    async function loadProtectedFileTree(force = false) {
+    async function loadPcloudFileTree(force = false) {
       const password = $("pcloudPassword").value;
       const status = $("downloadStatus");
       status.classList.remove("hidden");
@@ -2128,9 +2057,9 @@
         throw new Error("Missing pCloud password");
       }
 
-      if (protectedMetadata && !force) return protectedMetadata;
+      if (pcloudMetadata && !force) return pcloudMetadata;
 
-      status.textContent = "Loading protected pCloud file tree...";
+      status.textContent = "Loading pCloud file list...";
 
       const params = new URLSearchParams({
         code: PCLOUD_PUBLIC_LINK_CODE,
@@ -2145,18 +2074,18 @@
 
       const json = await res.json();
       if (!res.ok || json.result !== 0) {
-        status.innerHTML = `<span class="dangerText">Could not load protected file tree: ${escapeHtml(json.error || res.status)}</span>`;
+        status.innerHTML = `<span class="dangerText">Could not load pCloud file list: ${escapeHtml(json.error || res.status)}</span>`;
         throw new Error(json.error || `HTTP ${res.status}`);
       }
 
-      protectedMetadata = json.metadata;
-      protectedFileMap = buildProtectedFileMap(protectedMetadata);
-      status.innerHTML = `<span class="ok">Downloads unlocked.</span> ${protectedFileMap.size} protected files indexed.`;
+      pcloudMetadata = json.metadata;
+      pcloudFileMap = buildPcloudFileMap(pcloudMetadata);
+      status.innerHTML = `<span class="ok">pCloud file list loaded.</span> ${pcloudFileMap.size} pCloud files indexed.`;
       render();
-      return protectedMetadata;
+      return pcloudMetadata;
     }
 
-    function buildProtectedFileMap(root) {
+    function buildPcloudFileMap(root) {
       const map = new Map();
 
       function walk(node, parts) {
@@ -2223,14 +2152,14 @@
         .trim();
     }
 
-    function findProtectedFile(track, filename) {
+    function findPcloudFile(track, filename) {
       const path = [...computedDirectoryParts(track), filename].join("/");
-      const node = protectedFileMap.get(path);
+      const node = pcloudFileMap.get(path);
       if (node) return { node, path };
 
       // Fallback: exact filename under the expected track folder.
       const expectedFolder = computedDirectoryParts(track).join("/");
-      for (const [candidatePath, candidateNode] of protectedFileMap.entries()) {
+      for (const [candidatePath, candidateNode] of pcloudFileMap.entries()) {
         if (candidatePath.startsWith(expectedFolder + "/") && candidatePath.endsWith("/" + filename)) {
           return { node: candidateNode, path: candidatePath };
         }
@@ -2239,8 +2168,8 @@
       return { node: null, path };
     }
 
-    function findProtectedFolder(track) {
-      if (!protectedMetadata) return { node: null, path: computedDirectoryParts(track).join("/") };
+    function findPcloudFolder(track) {
+      if (!pcloudMetadata) return { node: null, path: computedDirectoryParts(track).join("/") };
 
       const wantedPath = computedDirectoryParts(track).join("/");
       let found = null;
@@ -2263,17 +2192,17 @@
       }
 
       // The root metadata name is "Drumscribe+ Member Files"; skip it for lookup.
-      if (Array.isArray(protectedMetadata.contents)) {
-        for (const child of protectedMetadata.contents) walk(child, []);
+      if (Array.isArray(pcloudMetadata.contents)) {
+        for (const child of pcloudMetadata.contents) walk(child, []);
       } else {
-        walk(protectedMetadata, []);
+        walk(pcloudMetadata, []);
       }
 
       return { node: found, path: wantedPath };
     }
 
     function folderFilesForTrack(track) {
-      const found = findProtectedFolder(track);
+      const found = findPcloudFolder(track);
       if (!found.node || !Array.isArray(found.node.contents)) {
         return { folder: found.node, path: found.path, files: [] };
       }
@@ -2330,8 +2259,8 @@
       status.classList.remove("hidden");
 
       try {
-        await loadProtectedFileTree(false);
-        const found = findProtectedFolder(track);
+        await loadPcloudFileTree(false);
+        const found = findPcloudFolder(track);
 
         if (!found.node || !found.node.folderid) {
           status.innerHTML = `<span class="dangerText">Could not find folder for ${escapeHtml(displayId(track.id))}.</span>`;
@@ -2462,7 +2391,7 @@
       }
 
       try {
-        await loadProtectedFileTree(false);
+        await loadPcloudFileTree(false);
         const info = folderFilesForTrack(cardData.track);
         if (!info.folder) {
           status.innerHTML = `<span class="dangerText">Could not find folder for ${escapeHtml(displayId(cardData.track.id))}.</span>`;
@@ -2503,7 +2432,7 @@
         return;
       }
 
-      await loadProtectedFileTree(false);
+      await loadPcloudFileTree(false);
       const info = folderFilesForTrack(track);
       const files = filterFilesBySelectedTypes(info.files);
 
@@ -2726,7 +2655,7 @@
 
     function preferredOriginalNameForRename(entryName, matchedItem) {
       // pCloud's ZIP endpoint can flatten or alter entry names. For renaming,
-      // prefer the filename from the protected file tree because that preserves
+      // prefer the filename from the pCloud file list because that preserves
       // source tokens such as "DRUMSCRIBE" and "SIMPLIFIED".
       const candidate = matchedItem?.filename || matchedItem?.node?.name || "";
       return zipBasename(candidate || entryName);
@@ -2943,7 +2872,7 @@
         return;
       }
 
-      await loadProtectedFileTree(false);
+      await loadPcloudFileTree(false);
 
       const foundItems = [];
       const seenFileIds = new Set();
@@ -3071,7 +3000,7 @@
         return;
       }
 
-      await loadProtectedFileTree(false);
+      await loadPcloudFileTree(false);
 
       const foundItems = [];
       const missing = [];
@@ -3213,10 +3142,10 @@
     });
 
     $("downloadSelectedTop").addEventListener("click", downloadSelectedFiles);
-    $("loadProtectedTree").addEventListener("click", async () => {
+    $("loadPcloudFileList").addEventListener("click", async () => {
       try {
-        await loadProtectedIndexJson(true);
-        await loadProtectedFileTree(true);
+        await loadIndexJson(true);
+        await loadPcloudFileTree(true);
       } catch (err) {
         console.error(err);
       }
@@ -3225,8 +3154,8 @@
       if (e.key !== "Enter") return;
       e.preventDefault();
       try {
-        await loadProtectedIndexJson(true);
-        await loadProtectedFileTree(true);
+        await loadIndexJson(true);
+        await loadPcloudFileTree(true);
       } catch (err) {
         console.error(err);
       }
@@ -3258,8 +3187,9 @@
     });
 
 
-    $("tbody").innerHTML = `<div class="muted">Enter the pCloud password, then unlock downloads to load the index.</div>`;
-    $("status").textContent = "Index locked.";
+    $("tbody").innerHTML = `<div class="muted">Loading JSON...</div>`;
+    $("status").textContent = "Loading JSON...";
+    loadJson().catch((err) => console.error(err));
   </script>
 </body>
 </html>
