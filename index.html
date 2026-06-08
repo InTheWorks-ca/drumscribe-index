@@ -1332,14 +1332,18 @@
       </fieldset>
 
       <fieldset>
-        <legend>Downloads</legend>
-        <label for="pcloudPassword">pCloud public-link password</label>
-        <input id="pcloudPassword" type="password" autocomplete="current-password" placeholder="Enter once per session" />
+        <legend>Download source</legend>
+        <label for="pcloudShareUrl">pCloud public-link URL or code</label>
+        <input id="pcloudShareUrl" type="text" autocomplete="url" placeholder="https://e.pcloud.link/publink/show?code=k..." />
+
+        <label for="pcloudPassword">pCloud password/code</label>
+        <input id="pcloudPassword" type="password" autocomplete="current-password" placeholder="Enter the share password/code" />
 
         <div class="toolbar" style="margin-top:12px">
-          <button id="loadPcloudFileList" class="primary">Load pCloud file list</button>
+          <button id="loadPcloudFileList" class="primary">Set download source</button>
         </div>
 
+        <div class="notice">The local index loads automatically. Download buttons are enabled after a valid pCloud source and password/code load the file list.</div>
 
       </fieldset>
 
@@ -1413,15 +1417,16 @@
     // If your member-files folder name changes, update this constant.
     const DRUMSCRIBE_FILES_ROOT = "../Drumscribe%2B%20Member%20Files/";
 
-    // pCloud public-link API settings for member downloads.
+    // pCloud public-link API settings for member downloads. The public link/code is
+    // entered in the page because pCloud can issue a new link code when a share is recreated.
     const PCLOUD_API = "https://eapi.pcloud.com";
-    const PCLOUD_PUBLIC_LINK_CODE = "kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
+    const DEFAULT_PCLOUD_PUBLIC_LINK = "";
 
     // Public index JSON. Keep drumscribe_index.json in the same directory as index.html.
     const INDEX_JSON_URL = new URL("drumscribe_index.json", window.location.href).href;
 
-    // Optional override. Leave blank to open the Drumscribe+ Member Files directory.
-    const MEMBER_FILES_URL = "https://e.pcloud.link/publink/show?code=kZHasEZ6bEbGzSwUVy7hqdEfxTvfffp3na7";
+    let currentPcloudPublicLinkCode = "";
+    let currentPcloudShareUrl = "";
 
     // PDF footer stamping settings. Applied to PDFs inside generated ZIP files.
     // Size is computed from the PDF page width because Guitar Pro exports can
@@ -1983,7 +1988,7 @@
 
     function updateStatus() {
       const renderedRows = document.querySelectorAll("#tbody .trackCard").length;
-      const lockText = downloadsReady() ? ` · ${pcloudFileMap.size} pCloud files indexed` : " · pCloud files not loaded";
+      const lockText = downloadsReady() ? ` · ${pcloudFileMap.size} pCloud files indexed` : " · download source not set";
       $("status").textContent = `${tracks.length} tracks · ${trackCards.length} cards · ${filtered.length} matching · ${renderedRows} shown · ${selectedIds.size} selected${lockText}`;
       const topDownload = $("downloadSelectedTop");
       if (topDownload) {
@@ -2047,22 +2052,58 @@
       };
     }
 
+    function parsePcloudPublicLinkCode(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+
+      try {
+        const url = new URL(raw);
+        return url.searchParams.get("code") || "";
+      } catch (err) {
+        // Accept the bare pCloud code, usually starting with k.
+        return raw.replace(/^code=/i, "").trim();
+      }
+    }
+
+    function pcloudShareUrlForCode(code) {
+      return code ? `https://e.pcloud.link/publink/show?code=${encodeURIComponent(code)}` : "";
+    }
+
+    function pcloudInputValue() {
+      return String($("pcloudShareUrl")?.value || DEFAULT_PCLOUD_PUBLIC_LINK || "").trim();
+    }
+
+    function resetPcloudFileList() {
+      pcloudMetadata = null;
+      pcloudFileMap = new Map();
+      currentPcloudPublicLinkCode = "";
+      currentPcloudShareUrl = "";
+      render();
+    }
+
     async function loadPcloudFileTree(force = false) {
+      const sourceInput = pcloudInputValue();
+      const publicLinkCode = parsePcloudPublicLinkCode(sourceInput);
       const password = $("pcloudPassword").value;
       const status = $("downloadStatus");
       status.classList.remove("hidden");
 
-      if (!password) {
-        status.innerHTML = `<span class="dangerText">Enter the pCloud share password first.</span>`;
-        throw new Error("Missing pCloud password");
+      if (!publicLinkCode) {
+        status.innerHTML = `<span class="dangerText">Enter the pCloud public-link URL or code first.</span>`;
+        throw new Error("Missing pCloud public-link code");
       }
 
-      if (pcloudMetadata && !force) return pcloudMetadata;
+      if (!password) {
+        status.innerHTML = `<span class="dangerText">Enter the pCloud password/code first.</span>`;
+        throw new Error("Missing pCloud password/code");
+      }
+
+      if (pcloudMetadata && !force && currentPcloudPublicLinkCode === publicLinkCode) return pcloudMetadata;
 
       status.textContent = "Loading pCloud file list...";
 
       const params = new URLSearchParams({
-        code: PCLOUD_PUBLIC_LINK_CODE,
+        code: publicLinkCode,
         linkpassword: password,
       });
 
@@ -2074,13 +2115,20 @@
 
       const json = await res.json();
       if (!res.ok || json.result !== 0) {
-        status.innerHTML = `<span class="dangerText">Could not load pCloud file list: ${escapeHtml(json.error || res.status)}</span>`;
-        throw new Error(json.error || `HTTP ${res.status}`);
+        const errorText = json.error || `HTTP ${res.status}`;
+        const hint = /deleted by the owner/i.test(errorText)
+          ? " The pCloud link appears to be obsolete or deleted. Paste the current pCloud public-link URL or code, then try again."
+          : "";
+        resetPcloudFileList();
+        status.innerHTML = `<span class="dangerText">Could not load pCloud file list: ${escapeHtml(errorText)}.</span>${escapeHtml(hint)}`;
+        throw new Error(errorText);
       }
 
+      currentPcloudPublicLinkCode = publicLinkCode;
+      currentPcloudShareUrl = sourceInput.startsWith("http") ? sourceInput : pcloudShareUrlForCode(publicLinkCode);
       pcloudMetadata = json.metadata;
       pcloudFileMap = buildPcloudFileMap(pcloudMetadata);
-      status.innerHTML = `<span class="ok">pCloud file list loaded.</span> ${pcloudFileMap.size} pCloud files indexed.`;
+      status.innerHTML = `<span class="ok">Download source set.</span> ${pcloudFileMap.size} pCloud files indexed. Download buttons are enabled.`;
       render();
       return pcloudMetadata;
     }
@@ -2268,13 +2316,14 @@
           return;
         }
 
-        const url = new URL(MEMBER_FILES_URL);
+        const baseShareUrl = currentPcloudShareUrl || pcloudShareUrlForCode(currentPcloudPublicLinkCode);
+        const url = new URL(baseShareUrl);
         url.searchParams.set("folderid", found.node.folderid);
         window.open(url.href, "_blank", "noopener");
         status.innerHTML = `Tried to open folder for ${escapeHtml(displayId(track.id))}.`;
       } catch (err) {
         console.error(err);
-        status.innerHTML = `<span class="dangerText">Could not open folder. Enter the pCloud password first.</span>`;
+        status.innerHTML = `<span class="dangerText">Could not open folder. Set the pCloud download source first.</span>`;
       }
     }
 
@@ -2518,8 +2567,9 @@
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 
-    async function fetchPcloudZipBlob(fileids, publicLinkCode = PCLOUD_PUBLIC_LINK_CODE, apiBase = PCLOUD_API) {
+    async function fetchPcloudZipBlob(fileids, publicLinkCode = currentPcloudPublicLinkCode, apiBase = PCLOUD_API) {
       const password = $("pcloudPassword").value;
+      if (!publicLinkCode) throw new Error("No pCloud download source has been set");
       const params = new URLSearchParams({
         code: publicLinkCode,
         linkpassword: password,
@@ -3144,25 +3194,35 @@
     $("downloadSelectedTop").addEventListener("click", downloadSelectedFiles);
     $("loadPcloudFileList").addEventListener("click", async () => {
       try {
-        await loadIndexJson(true);
         await loadPcloudFileTree(true);
       } catch (err) {
         console.error(err);
       }
     });
-    $("pcloudPassword").addEventListener("keydown", async (e) => {
-      if (e.key !== "Enter") return;
-      e.preventDefault();
-      try {
-        await loadIndexJson(true);
-        await loadPcloudFileTree(true);
-      } catch (err) {
-        console.error(err);
-      }
+    ["pcloudShareUrl", "pcloudPassword"].forEach((id) => {
+      $(id).addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        try {
+          await loadPcloudFileTree(true);
+        } catch (err) {
+          console.error(err);
+        }
+      });
     });
+
+    $("pcloudShareUrl").addEventListener("input", () => {
+      if (downloadsReady()) resetPcloudFileList();
+      const status = $("downloadStatus");
+      status.classList.remove("hidden");
+      status.textContent = "Download source changed. Set download source again to enable Download buttons.";
+    });
+
     $("openPublicFolder").addEventListener("click", () => {
       const memberFilesDirectory = new URL(DRUMSCRIBE_FILES_ROOT, window.location.href).href;
-      window.open(MEMBER_FILES_URL || memberFilesDirectory, "_blank", "noopener");
+      const shareInput = pcloudInputValue();
+      const code = parsePcloudPublicLinkCode(shareInput) || currentPcloudPublicLinkCode;
+      window.open((shareInput.startsWith("http") ? shareInput : pcloudShareUrlForCode(code)) || memberFilesDirectory, "_blank", "noopener");
     });
 
     $("themeToggle").addEventListener("click", () => {
@@ -3187,9 +3247,13 @@
     });
 
 
-    $("tbody").innerHTML = `<div class="muted">Loading JSON...</div>`;
-    $("status").textContent = "Loading JSON...";
-    loadJson().catch((err) => console.error(err));
+    if (DEFAULT_PCLOUD_PUBLIC_LINK) {
+      $("pcloudShareUrl").value = DEFAULT_PCLOUD_PUBLIC_LINK;
+    }
+
+    $("tbody").innerHTML = `<div class="muted">Loading local JSON...</div>`;
+    $("status").textContent = "Loading local JSON...";
+    loadJson(true).catch((err) => console.error(err));
   </script>
 </body>
 </html>
